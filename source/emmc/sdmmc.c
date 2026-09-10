@@ -1135,6 +1135,48 @@ DPRINTF("[SD] card max current over limit\n");
 	return 0;
 }
 
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+int _sd_storage_enable_DDR200(sdmmc_storage_t *storage, u8 *buf)
+{
+	u32 cmd_system = UHS_DDR200_BUS_SPEED;
+
+	if (!_sd_storage_switch(storage, buf, SD_SWITCH_CHECK, SD_SWITCH_GRP_CMDSYS, cmd_system))
+		return 0;
+
+	u32 system_out = (buf[16] >> 4) & 0xF;
+	if (system_out != cmd_system)
+		return 0;
+
+DPRINTF("[SD] supports DDR200 mode\n");
+
+	u16 total_pwr_consumption = ((u16)buf[0] << 8) | buf[1];
+DPRINTF("[SD] total max current: %d\n", total_pwr_consumption);
+
+	if (total_pwr_consumption > 800)
+	{
+DPRINTF("[SD] card max current over limit\n");
+		return 0;
+	}
+
+	if (!_sd_storage_switch(storage, buf, SD_SWITCH_SET, SD_SWITCH_GRP_CMDSYS, cmd_system))
+		return 0;
+
+	if (system_out != ((buf[16] >> 4) & 0xF))
+		return 0;
+DPRINTF("[SD] card accepted DDR200\n");
+
+	if (!sdmmc_setup_clock(storage->sdmmc, SDHCI_TIMING_UHS_DDR200))
+		return 0;
+DPRINTF("[SD] after setup clock DDR200\n");
+
+	if (!sdmmc_tuning_execute(storage->sdmmc, SDHCI_TIMING_UHS_DDR200, MMC_SEND_TUNING_BLOCK))
+		return 0;
+DPRINTF("[SD] after tuning DDR200\n");
+
+	return _sdmmc_storage_check_status(storage);
+}
+#endif
+
 int _sd_storage_enable_uhs_low_volt(sdmmc_storage_t *storage, u32 type, u8 *buf)
 {
 	if (sdmmc_get_bus_width(storage->sdmmc) != SDMMC_BUS_WIDTH_4)
@@ -1146,10 +1188,29 @@ int _sd_storage_enable_uhs_low_volt(sdmmc_storage_t *storage, u32 type, u8 *buf)
 
 	u8  access_mode = buf[13];
 	u16 current_limit = buf[7] | buf[6] << 8;
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+	u16 cmd_system = buf[11] | buf[10] << 8;
+DPRINTF("[SD] access: %02X, current: %02X, cmd system: %04X\n", access_mode, current_limit, cmd_system);
+#else
 DPRINTF("[SD] access: %02X, current: %02X\n", access_mode, current_limit);
+#endif
 
 	// Try to raise the current limit to let the card perform better.
 	_sd_storage_set_current_limit(storage, current_limit, buf);
+
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+	if (type == SDHCI_TIMING_UHS_DDR200)
+	{
+		if (cmd_system & SD_MODE_UHS_DDR200)
+		{
+			storage->csd.busspeed = 200;
+
+			return _sd_storage_enable_DDR200(storage, buf);
+		}
+
+		type = SDHCI_TIMING_UHS_SDR104;
+	}
+#endif
 
 	u32 hs_type = 0;
 	switch (type)
@@ -1290,6 +1351,9 @@ static bool _sdmmc_storage_get_low_voltage_support(u32 bus_width, u32 type)
 	case SDHCI_TIMING_UHS_SDR104:
 	case SDHCI_TIMING_UHS_SDR82:
 	case SDHCI_TIMING_UHS_DDR50:
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+	case SDHCI_TIMING_UHS_DDR200:
+#endif
 		if (bus_width == SDMMC_BUS_WIDTH_4)
 			return true;
 	default:

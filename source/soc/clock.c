@@ -246,6 +246,7 @@ static clock_sdmmc_t _clock_sdmmc_table[4] = { 0 };
 #define SDMMC_CLOCK_SRC_PLLP_OUT0      0x0
 #define SDMMC_CLOCK_SRC_PLLC4_OUT2     0x3
 #define SDMMC4_CLOCK_SRC_PLLC4_OUT2_LJ 0x1
+#define SDMMC_CLOCK_SRC_PLLC4_OUT0     0x7
 
 static int _clock_sdmmc_config_clock_host(u32 *pclock, u32 id, u32 val)
 {
@@ -306,6 +307,20 @@ static int _clock_sdmmc_config_clock_host(u32 *pclock, u32 id, u32 val)
 		*pclock = 199680;
 		divisor = 0;  // 1 div.
 		break;
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+	case 400000:
+		source = SDMMC_CLOCK_SRC_PLLC4_OUT0;
+		*pclock = 399360;
+		divisor = 3;  // 2.5 div.
+		_clock_enable_pllc4();
+		break;
+	case 333000:
+		source = SDMMC_CLOCK_SRC_PLLC4_OUT0;
+		*pclock = 332800;
+		divisor = 4;  // 3 div.
+		_clock_enable_pllc4();
+		break;
+#endif
 	default:
 		*pclock = 24728;
 		divisor = 31; // 16.5 div.
@@ -343,6 +358,14 @@ static int _clock_sdmmc_config_clock_host(u32 *pclock, u32 id, u32 val)
 
 	return 1;
 }
+
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+void clock_sdmmc_invalidate_clock_source(u32 id)
+{
+	if (id <= SDMMC_4)
+		_clock_sdmmc_table[id].clock = 0;
+}
+#endif
 
 void clock_sdmmc_config_clock_source(u32 *pclock, u32 id, u32 val)
 {
@@ -411,6 +434,12 @@ void clock_sdmmc_get_card_clock_div(u32 *pclock, u16 *pdivisor, u32 type)
 		*pclock = 40800;
 		*pdivisor = 1;
 		break;
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+	case SDHCI_TIMING_UHS_DDR200:
+		*pclock = EMUMMC_DDR200_SRC_KHZ;
+		*pdivisor = 2;
+		break;
+#endif
 	case SDHCI_TIMING_MMC_HS102: // Actual IO Freq: 99.84 MHz.
 		*pclock = 200000;
 		*pdivisor = 2;

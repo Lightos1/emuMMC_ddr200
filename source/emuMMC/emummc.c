@@ -21,7 +21,11 @@
 #include "emummc.h"
 #include "emummc_ctx.h"
 #include "../utils/fatal.h"
+#include "../utils/log.h"
+#include "../nx/cache.h"
+#include "../soc/clock.h"
 #include "../libs/fatfs/diskio.h"
+#include "../soc/gpio.h"
 
 static bool sdmmc_first_init = false;
 static bool storageSDinitialized = false;
@@ -52,6 +56,56 @@ volatile Handle *sdmmc_das_handle;
 // FatFS
 file_based_ctxt f_emu;
 static bool fat_mounted = false;
+
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+extern int _sd_storage_enable_DDR200(sdmmc_storage_t *storage, u8 *buf);
+
+static bool sdmmc_ddr200_reassert_enabled = true;
+
+static void _ddr200_reassert(void)
+{
+    static u8 ddr200_switch_buf[512];
+    u8 dma_save[64];
+    void *dma_scratch = NULL;
+
+    if (!sdmmc_ddr200_reassert_enabled || !sd_storage.initialized)
+        return;
+
+    if (nx_sd_mode_get() != SD_UHS_DDR208)
+        return;
+
+    if ((sd_sdmmc.regs->hostctl2 & 0x7) == UHS_DDR50_BUS_SPEED)
+        return;
+
+    if (_current_accessor != NULL)
+    {
+        int dma_idx = sdmmc_calculate_fitting_dma_index(_current_accessor, 1);
+        dma_scratch = &_current_accessor->parent->dmaBuffers[dma_idx].device_addr_buffer[0];
+        memcpy(dma_save, dma_scratch, sizeof(dma_save));
+    }
+
+    sdmmc_card_clock_powersave(&sd_sdmmc, SDMMC_POWER_SAVE_DISABLE);
+    clock_sdmmc_invalidate_clock_source(SDMMC_1);
+
+    sd_storage.csd.busspeed = 200;
+
+    int ok = _sd_storage_enable_DDR200(&sd_storage, ddr200_switch_buf);
+
+    sdmmc_card_clock_powersave(&sd_sdmmc, SDMMC_POWER_SAVE_ENABLE);
+
+    if (dma_scratch != NULL)
+    {
+        memcpy(dma_scratch, dma_save, sizeof(dma_save));
+        armDCacheFlush(dma_scratch, sizeof(dma_save));
+    }
+
+    if (!ok)
+        sdmmc_ddr200_reassert_enabled = false;
+}
+#else
+#define _ddr200_reassert() ((void)0)
+#endif
+
 
 static void _sdmmc_ensure_device_attached(void)
 {
@@ -490,11 +544,20 @@ uint64_t sdmmc_wrapper_read(void *buf, uint64_t bufSize, int mmc_id, unsigned in
 
         if (mmc_id == FS_SDMMC_SD)
         {
+            _ddr200_reassert();
+
+            bool dump_requested = !gpio_read(GPIO_PORT_X, GPIO_PIN_6);
+
+            if (dump_requested) {
+                // Log("Reassert count: %u\n", reassertCount);
+                ViewLog();
+            }
+
             static bool first_sd_read = true;
             if (first_sd_read)
             {
                 first_sd_read = false;
-                if (emuMMC_ctx.EMMC_Type == emuMMC_SD_Raw)
+                if (emuMMC_ctx.EMMC_Type == emuMMC_SD_Raw && !nx_sd_is_ddr200())
                 {
                     // Because some SD cards have issues with emuMMC's driver
                     // we currently swap to FS's driver after first SD read
@@ -553,6 +616,9 @@ uint64_t sdmmc_wrapper_write(int mmc_id, unsigned int sector, unsigned int num_s
         {
             mutex_lock_handler(mmc_id);
             _current_accessor = _this;
+            _sdmmc_ensure_device_attached();
+
+            _ddr200_reassert();
 
             // Call hekates driver.
             if (sdmmc_storage_write(&sd_storage, sector, num_sectors, buf))

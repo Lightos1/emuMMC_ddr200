@@ -29,6 +29,7 @@
 #define SD_APP_SET_BUS_WIDTH      6   /* ac   [1:0] bus width    R1  */
 #define SD_APP_SD_STATUS         13   /* adtc                    R1  */
 #define SD_APP_SEND_NUM_WR_BLKS  22   /* adtc                    R1  */
+#define SD_APP_SET_WR_BLK_ERASE_COUNT 23 /* ac [22:0] blocks     R1  */
 #define SD_APP_OP_COND           41   /* bcr  [31:0] OCR         R3  */
 #define SD_APP_SET_CLR_CARD_DETECT 42
 #define SD_APP_SEND_SCR          51   /* adtc                    R1  */
@@ -96,6 +97,14 @@
 #define SD_MODE_UHS_SDR104	(1 << UHS_SDR104_BUS_SPEED)
 #define SD_MODE_UHS_DDR50	(1 << UHS_DDR50_BUS_SPEED)
 
+#define SD_SET_CMD_SYSTEM_DEF	0
+#define SD_SET_CMD_SYSTEM_VND	14
+#define UHS_DDR200_BUS_SPEED	SD_SET_CMD_SYSTEM_VND
+
+#define SD_CMD_SYSTEM_DEF	(1u << SD_SET_CMD_SYSTEM_DEF)
+#define SD_CMD_SYSTEM_VND	(1u << SD_SET_CMD_SYSTEM_VND)
+#define SD_MODE_UHS_DDR200	SD_CMD_SYSTEM_VND
+
 #define SD_DRIVER_TYPE_B	0x01
 #define SD_DRIVER_TYPE_A	0x02
 
@@ -119,6 +128,9 @@
 * SD_SWITCH function groups
 */
 #define SD_SWITCH_GRP_ACCESS	0
+#define SD_SWITCH_GRP_CMDSYS	1
+#define SD_SWITCH_GRP_DRVSTR	2
+#define SD_SWITCH_GRP_PWRLIM	3
 
 /*
 * SD_SWITCH access modes

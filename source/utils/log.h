@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2018 naehrwert
- * Copyright (c) 2018-2019 CTCaer
+ * Copyright (c) 2019 m4xw <m4x@m4xw.net>
+ * Copyright (c) 2019 Atmosphere-NX
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -15,25 +15,9 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef NX_SD_H
-#define NX_SD_H
+/* See https://github.com/lulle2007200/emuMMC/blob/internal-emummc/source/ */
 
-#include "../utils/types.h"
+#pragma once
 
-enum
-{
-	SD_INIT_FAIL  = 0,
-	SD_1BIT_HS25  = 1,
-	SD_4BIT_HS25  = 2,
-	SD_UHS_SDR82  = 3,
-	SD_UHS_SDR104 = 4,
-	SD_UHS_DDR208 = 5
-};
-
-u32  nx_sd_get_mode();
-u32  nx_sd_mode_get(void);
-int  nx_sd_init_retry(bool power_cycle);
-bool nx_sd_initialize(bool power_cycle);
-bool nx_sd_is_ddr200(void);
-
-#endif
+void Log(const char *data, ...);
+[[noreturn]] void ViewLog();

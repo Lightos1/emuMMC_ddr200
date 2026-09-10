@@ -22,7 +22,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 ARCH	:=	-march=armv8-a -mtune=cortex-a57 -mtp=soft -fPIE
 
 # Current max usage is 0x4600. (512 * 34 FatFS file objects + 1 fsync buffer).
-DEFINES := -DINNER_HEAP_SIZE=0x8000
+DEFINES := -DINNER_HEAP_SIZE=0x8000 -DEMUMMC_SDMMC_UHS_DDR200_SUPPORT
 
 CFLAGS	:=	-Wall -O2 -ffunction-sections -fdata-sections -Wno-unused-function \
 			$(ARCH) $(DEFINES)

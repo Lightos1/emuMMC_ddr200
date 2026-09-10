@@ -19,21 +19,37 @@
 #include "sdmmc_driver.h"
 #include "../soc/gpio.h"
 #include "../libs/fatfs/ff.h"
+#include "../utils/log.h"
 
 extern sdmmc_t sd_sdmmc;
 extern sdmmc_storage_t sd_storage;
 
-static u32  sd_mode = SD_UHS_SDR104;
+#ifndef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+#define SD_DEFAULT_SPEED SD_UHS_SDR104
+#else
+#define SD_DEFAULT_SPEED SD_UHS_DDR208
+#endif
+
+static u32  sd_mode = SD_DEFAULT_SPEED;
 
 u32 nx_sd_mode_get()
 {
 	return sd_mode;
 }
 
+bool nx_sd_is_ddr200(void)
+{
+	return sd_storage.csd.busspeed == 200;
+}
+
 int nx_sd_init_retry(bool power_cycle)
 {
 	u32 bus_width = SDMMC_BUS_WIDTH_4;
+#ifndef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
 	u32 type = SDHCI_TIMING_UHS_SDR104;
+#else
+	u32 type = SDHCI_TIMING_UHS_DDR200;
+#endif
 
 	// Power cycle SD card.
 	if (power_cycle)
@@ -60,8 +76,13 @@ int nx_sd_init_retry(bool power_cycle)
 	case SD_UHS_SDR104:
 		type = SDHCI_TIMING_UHS_SDR104;
 		break;
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+	case SD_UHS_DDR208:
+		type = SDHCI_TIMING_UHS_DDR200;
+		break;
+#endif
 	default:
-		sd_mode = SD_UHS_SDR104;
+		sd_mode = SD_DEFAULT_SPEED;
 	}
 
 	return sdmmc_storage_init_sd(&sd_storage, &sd_sdmmc, bus_width, type);

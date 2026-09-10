@@ -332,6 +332,13 @@ int sdmmc_setup_clock(sdmmc_t *sdmmc, u32 type)
 		sdmmc->regs->hostctl2 |= SDHCI_CTRL_VDD_180;
 		break;
 
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+	case SDHCI_TIMING_UHS_DDR200:
+		sdmmc->regs->hostctl2  = (sdmmc->regs->hostctl2 & SDHCI_CTRL_UHS_MASK) | UHS_DDR50_BUS_SPEED;
+		sdmmc->regs->hostctl2 |= SDHCI_CTRL_VDD_180;
+		break;
+#endif
+
 	case SDHCI_TIMING_UHS_SDR25:
 		sdmmc->regs->hostctl2  = (sdmmc->regs->hostctl2 & SDHCI_CTRL_UHS_MASK) | UHS_SDR25_BUS_SPEED;
 		sdmmc->regs->hostctl2 |= SDHCI_CTRL_VDD_180;
@@ -601,7 +608,7 @@ static void _sdmmc_send_tuning_cmd(sdmmc_t *sdmmc, u32 cmd)
 	_sdmmc_send_cmd(sdmmc, &cmdbuf, true);
 }
 
-static int _sdmmc_tuning_execute_once(sdmmc_t *sdmmc, u32 cmd)
+static int _sdmmc_tuning_execute_once(sdmmc_t *sdmmc, u32 cmd, u32 tap)
 {
 	if (sdmmc->powersave_enabled)
 		return 0;
@@ -613,6 +620,17 @@ static int _sdmmc_tuning_execute_once(sdmmc_t *sdmmc, u32 cmd)
 	sdmmc->regs->norintstsen |= SDHCI_INT_DATA_AVAIL;
 	sdmmc->regs->norintsts = sdmmc->regs->norintsts;
 	sdmmc->regs->clkcon &= ~SDHCI_CLOCK_CARD_EN;
+
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+	if (tap != SDMMC_HW_TAP_TUNING)
+	{
+		sdmmc->regs->ventunctl0 &= ~TEGRA_MMC_VNDR_TUN_CTRL0_TAP_VAL_UPDATED_BY_HW;
+		sdmmc->regs->venclkctl   = (sdmmc->regs->venclkctl & 0xFF00FFFF) | (tap << 16);
+		sdmmc->regs->ventunctl0 |=  TEGRA_MMC_VNDR_TUN_CTRL0_TAP_VAL_UPDATED_BY_HW;
+	}
+#else
+	(void)tap;
+#endif
 
 	_sdmmc_send_tuning_cmd(sdmmc, cmd);
 	_sdmmc_commit_changes(sdmmc);
@@ -645,12 +663,109 @@ static int _sdmmc_tuning_execute_once(sdmmc_t *sdmmc, u32 cmd)
 	return 0;
 }
 
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+
+typedef struct _sdmmc_manual_tuning_t
+{
+	u32 result[8];
+	u32 num_iter;
+} sdmmc_manual_tuning_t;
+
+static int _sdmmc_manual_tuning_set_tap(sdmmc_t *sdmmc, sdmmc_manual_tuning_t *tuning)
+{
+	u32 tap_start = SDMMC_INVALID_TAP;
+	u32 win_size  = 0;
+	u32 best_tap  = 0;
+	u32 best_size = 0;
+
+	for (u32 i = 0; i < tuning->num_iter; i++)
+	{
+		u32 iter_end = i == (tuning->num_iter - 1) ? 1 : 0;
+		u32 stable = tuning->result[i / 32] & (1u << (i % 32));
+		if (stable && !iter_end)
+		{
+			if (tap_start == SDMMC_INVALID_TAP)
+				tap_start = i;
+
+			win_size++;
+		}
+		else
+		{
+			if (tap_start != SDMMC_INVALID_TAP)
+			{
+				u32 tap_end = !iter_end ? (i - 1) : i;
+
+				if (win_size > best_size)
+				{
+					best_tap  = (tap_start + tap_end) / 2;
+					best_size = win_size + iter_end;
+				}
+
+				tap_start = SDMMC_INVALID_TAP;
+				win_size  = 0;
+			}
+		}
+	}
+
+	if (!best_tap || best_size < SDMMC_SAMPLE_WIN_SIZE_MIN)
+		return 0;
+
+	sdmmc->regs->clkcon     &= ~SDHCI_CLOCK_CARD_EN;
+	sdmmc->regs->ventunctl0 &= ~TEGRA_MMC_VNDR_TUN_CTRL0_TAP_VAL_UPDATED_BY_HW;
+
+	sdmmc->regs->venclkctl   = (sdmmc->regs->venclkctl & 0xFF00FFFF) | (best_tap << 16);
+
+	sdmmc->regs->ventunctl0 |=  TEGRA_MMC_VNDR_TUN_CTRL0_TAP_VAL_UPDATED_BY_HW;
+	sdmmc->regs->clkcon     |= SDHCI_CLOCK_CARD_EN;
+
+	return 1;
+}
+
+static int _sdmmc_tuning_execute_ddr200(sdmmc_t *sdmmc, u32 cmd)
+{
+	sdmmc_manual_tuning_t manual_tuning = { 0 };
+	manual_tuning.num_iter = 128;
+
+	sdmmc->regs->ventunctl1  = 0; // step_size 1.
+	sdmmc->regs->ventunctl0  = (sdmmc->regs->ventunctl0 & 0xFFFF1FFF) | (2 << 13); // 128 Tries.
+	sdmmc->regs->ventunctl0  = (sdmmc->regs->ventunctl0 & 0xFFFFE03F) | (1 << 6);  // 1x Multiplier.
+	sdmmc->regs->ventunctl0 |= TEGRA_MMC_VNDR_TUN_CTRL0_TAP_VAL_UPDATED_BY_HW;
+
+	sdmmc->regs->hostctl2   |= SDHCI_CTRL_EXEC_TUNING;
+
+	for (u32 i = 0; i < manual_tuning.num_iter; i++)
+	{
+		_sdmmc_tuning_execute_once(sdmmc, cmd, i);
+
+		u32 sampled = (sdmmc->regs->hostctl2 & SDHCI_CTRL_TUNED_CLK) ? 1 : 0;
+		manual_tuning.result[i / 32] |= sampled << (i % 32);
+
+		if (!(sdmmc->regs->hostctl2 & SDHCI_CTRL_EXEC_TUNING))
+			break;
+	}
+
+	int res = _sdmmc_manual_tuning_set_tap(sdmmc, &manual_tuning);
+	if (!res)
+		sdmmc->regs->hostctl2 &= ~SDHCI_CTRL_EXEC_TUNING;
+
+	return res;
+}
+#endif
+
 int sdmmc_tuning_execute(sdmmc_t *sdmmc, u32 type, u32 cmd)
 {
 	u32 max = 0, flag = 0;
 
+	if (sdmmc->powersave_enabled)
+		return 0;
+
 	switch (type)
 	{
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+	case SDHCI_TIMING_UHS_DDR200:
+		return _sdmmc_tuning_execute_ddr200(sdmmc, cmd);
+#endif
+
 	case SDHCI_TIMING_MMC_HS200:
 	case SDHCI_TIMING_MMC_HS400:
 	case SDHCI_TIMING_UHS_SDR104:
@@ -683,7 +798,7 @@ int sdmmc_tuning_execute(sdmmc_t *sdmmc, u32 type, u32 cmd)
 
 	for (u32 i = 0; i < max; i++)
 	{
-		_sdmmc_tuning_execute_once(sdmmc, cmd);
+		_sdmmc_tuning_execute_once(sdmmc, cmd, SDMMC_HW_TAP_TUNING);
 		if (!(sdmmc->regs->hostctl2 & SDHCI_CTRL_EXEC_TUNING))
 			break;
 	}
