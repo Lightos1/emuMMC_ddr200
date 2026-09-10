@@ -28,8 +28,12 @@
 #include "../utils/fatal.h"
 #include "../utils/types.h"
 #include "../utils/util.h"
+#include "../utils/log.h"
 
 #define DPRINTF(...)
+
+static const u8 _trim_values_t210[4]    = {  2,  8,  3,  8 };
+static const u8 _trim_values_t210b01[4] = { 14, 13, 15, 13 };
 
 /*! SCMMC controller base addresses. */
 static const u64 _sdmmc_bases[4] = {
@@ -204,16 +208,8 @@ static void _sdmmc_autocal_execute(sdmmc_t *sdmmc, u32 power)
 		}
 	}
 
-#if 0
-	// Check if Comp pad is open or short to ground.
-	// SDMMC1: CZ pads - T210/T210B01: 7-bit/5-bit. SDMMC2/4: LV_CZ pads - 5-bit.
-	u8 code_mask = (sdmmc->t210b01 || sdmmc->id != SDMMC_1) ? 0x1F : 0x7F;
-	u8 autocal_pu_status = sdmmc->regs->autocalsts & code_mask;
-	if (!autocal_pu_status)
-		EPRINTF("SDMMC: Comp Pad short to gnd!");
-	else if (autocal_pu_status == code_mask)
-		EPRINTF("SDMMC: Comp Pad open!");
-#endif
+	sdmmc->autocal_sts = sdmmc->regs->autocalsts;
+	sdmmc->autocal_fallback = !timeout;
 
 	// In case auto calibration fails, we load suggested standard values.
 	if (!timeout)
@@ -669,7 +665,62 @@ typedef struct _sdmmc_manual_tuning_t
 {
 	u32 result[8];
 	u32 num_iter;
+	u32 iter_done;
 } sdmmc_manual_tuning_t;
+
+#define SDMMC_TUNING_LOG_MAX 16
+
+static u32 _sdmmc_tuning_log_id = 0;
+
+static void _sdmmc_manual_tuning_log(sdmmc_t *sdmmc, sdmmc_manual_tuning_t *tuning, u32 best_tap, u32 best_size, int pass)
+{
+	u32 tap_start = SDMMC_INVALID_TAP;
+	u32 win_size  = 0;
+
+	if (_sdmmc_tuning_log_id >= SDMMC_TUNING_LOG_MAX)
+		return;
+
+	Log("[%u] iter %u/%u map %08X %08X %08X %08X\n", _sdmmc_tuning_log_id, tuning->iter_done, tuning->num_iter, tuning->result[0], tuning->result[1], tuning->result[2], tuning->result[3]);
+
+	for (u32 i = 0; i < tuning->num_iter; i++)
+	{
+		u32 iter_end = i == (tuning->num_iter - 1) ? 1 : 0;
+		u32 stable = tuning->result[i / 32] & (1u << (i % 32));
+
+		if (stable && !iter_end)
+		{
+			if (tap_start == SDMMC_INVALID_TAP)
+				tap_start = i;
+
+			win_size++;
+		}
+		else if (tap_start != SDMMC_INVALID_TAP)
+		{
+			u32 tap_end = !iter_end ? (i - 1) : i;
+
+			Log("[%u] win %u-%u sz %u mid %u\n", _sdmmc_tuning_log_id, tap_start, tap_end, win_size + iter_end, (tap_start + tap_end) / 2);
+
+			tap_start = SDMMC_INVALID_TAP;
+			win_size  = 0;
+		}
+	}
+
+	Log("[%u] best tap %u sz %u min %u %s\n", _sdmmc_tuning_log_id, best_tap, best_size, SDMMC_SAMPLE_WIN_SIZE_MIN, pass ? "OK" : "FAIL");
+
+	Log("[%u] clk %u vclk %08X tun0 %08X acal %08X cmp %08X hc2 %04X\n", _sdmmc_tuning_log_id, sdmmc->divisor, sdmmc->regs->venclkctl, sdmmc->regs->ventunctl0, sdmmc->regs->autocalcfg, sdmmc->regs->sdmemcmppadctl, sdmmc->regs->hostctl2);
+
+	u32 pad_cfg = APB_MISC(APB_MISC_GP_SDMMC1_PAD_CFGPADCTRL);
+	u32 code_mask = (sdmmc->t210b01 || sdmmc->id != SDMMC_1) ? 0x1F : 0x7F;
+	u32 comp = sdmmc->autocal_sts & code_mask;
+
+	Log("[%u] pad %08X up %u dn %u slw %u sts %08X comp %u%s fb %d\n", _sdmmc_tuning_log_id, pad_cfg, (pad_cfg >> 20) & 0x7F, (pad_cfg >> 12) & 0x7F, (pad_cfg >> 28) & 0xF,sdmmc->autocal_sts, comp,
+        !comp ? " SHORT" : (comp == code_mask ? " OPEN" : ""), sdmmc->autocal_fallback);
+
+	Log("[%u] pmx %04X %04X %04X lpbk %u iot %08X iosp %08X msc %08X hc %02X ck %04X pw %02X\n", _sdmmc_tuning_log_id, (u32)PINMUX_AUX(PINMUX_AUX_SDMMC1_CLK), (u32)PINMUX_AUX(PINMUX_AUX_SDMMC1_CMD), (u32)PINMUX_AUX(PINMUX_AUX_SDMMC1_DAT0),
+		(u32)APB_MISC(APB_MISC_GP_SDMMC1_CLK_LPBK_CONTROL), sdmmc->regs->veniotrimctl, sdmmc->regs->iospare, sdmmc->regs->venmiscctl, (u32)sdmmc->regs->hostctl, (u32)sdmmc->regs->clkcon, (u32)sdmmc->regs->pwrcon);
+
+	_sdmmc_tuning_log_id++;
+}
 
 static int _sdmmc_manual_tuning_set_tap(sdmmc_t *sdmmc, sdmmc_manual_tuning_t *tuning)
 {
@@ -707,7 +758,11 @@ static int _sdmmc_manual_tuning_set_tap(sdmmc_t *sdmmc, sdmmc_manual_tuning_t *t
 		}
 	}
 
-	if (!best_tap || best_size < SDMMC_SAMPLE_WIN_SIZE_MIN)
+	int pass = best_tap && best_size >= SDMMC_SAMPLE_WIN_SIZE_MIN;
+
+	_sdmmc_manual_tuning_log(sdmmc, tuning, best_tap, best_size, pass);
+
+	if (!pass)
 		return 0;
 
 	sdmmc->regs->clkcon     &= ~SDHCI_CLOCK_CARD_EN;
@@ -739,6 +794,8 @@ static int _sdmmc_tuning_execute_ddr200(sdmmc_t *sdmmc, u32 cmd)
 
 		u32 sampled = (sdmmc->regs->hostctl2 & SDHCI_CTRL_TUNED_CLK) ? 1 : 0;
 		manual_tuning.result[i / 32] |= sampled << (i % 32);
+
+		manual_tuning.iter_done = i + 1;
 
 		if (!(sdmmc->regs->hostctl2 & SDHCI_CTRL_EXEC_TUNING))
 			break;
@@ -1335,10 +1392,7 @@ int sdmmc_init(sdmmc_t *sdmmc, u32 id, u32 power, u32 bus_width, u32 type, int p
 	u32 clock;
 	u16 divisor;
 	u8 vref_sel = 7;
-
-	const u32 trim_values_t210[] = { 2, 8, 3, 8 };
-	const u32 trim_values_t210b01[] = { 14, 13, 15, 13 };
-	const u32 *trim_values = sdmmc->t210b01 ? trim_values_t210b01 : trim_values_t210;
+	const u8 *trim_values;
 
 	if (id > SDMMC_4 || id == SDMMC_3)
 		return 0;
@@ -1349,6 +1403,8 @@ int sdmmc_init(sdmmc_t *sdmmc, u32 id, u32 power, u32 bus_width, u32 type, int p
 	sdmmc->id = id;
 	sdmmc->clock_stopped = 1;
 	sdmmc->t210b01 = splGetSocType() == SplSocType_Mariko;
+
+	trim_values = sdmmc->t210b01 ? _trim_values_t210b01 : _trim_values_t210;
 
 	// Do specific SDMMC HW configuration.
 	switch (id)
@@ -1416,6 +1472,42 @@ int sdmmc_init(sdmmc_t *sdmmc, u32 id, u32 power, u32 bus_width, u32 type, int p
 
 	return 0;
 }
+
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+void sdmmc_ddr200_restore_host_cfg(sdmmc_t *sdmmc)
+{
+	if (sdmmc->id != SDMMC_1 || sdmmc->clock_stopped)
+		return;
+
+	APB_MISC(APB_MISC_GP_SDMMC1_CLK_LPBK_CONTROL) = 1;
+
+	_sdmmc_config_sdmmc1_schmitt();
+
+	if (!sdmmc->t210b01)
+	{
+		APB_MISC(APB_MISC_GP_SDMMC1_PAD_CFGPADCTRL) =
+			(APB_MISC(APB_MISC_GP_SDMMC1_PAD_CFGPADCTRL) & 0xFFFFFFF) | 0x50000000;
+		(void)APB_MISC(APB_MISC_GP_SDMMC1_PAD_CFGPADCTRL);
+	}
+
+	sdmmc->regs->iospare |= 0x80000;
+	sdmmc->regs->veniotrimctl &= 0xFFFFFFFB;
+	sdmmc->regs->venclkctl = (sdmmc->regs->venclkctl & 0xE0FFFFFB) |
+		((u32)(sdmmc->t210b01 ? _trim_values_t210b01 : _trim_values_t210)[sdmmc->id] << 24);
+	sdmmc->regs->sdmemcmppadctl =
+		(sdmmc->regs->sdmemcmppadctl & TEGRA_MMC_SDMEMCOMPPADCTRL_COMP_VREF_SEL_MASK) |
+		(sdmmc->t210b01 ? 0 : 7);
+
+	_sdmmc_commit_changes(sdmmc);
+	usleep(3);
+	_sdmmc_reset(sdmmc);
+
+	if (!_sdmmc_autocal_config_offset(sdmmc, SDMMC_POWER_1_8))
+		return;
+
+	_sdmmc_autocal_execute(sdmmc, SDMMC_POWER_1_8);
+}
+#endif
 
 void sdmmc1_disable_power()
 {

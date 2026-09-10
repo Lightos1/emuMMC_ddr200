@@ -233,6 +233,8 @@ typedef struct _sdmmc_t
 	u32 rsp[4];
 	u32 rsp3;
 	int t210b01;
+	u32 autocal_sts;
+	int autocal_fallback;
 } sdmmc_t;
 
 /*! SDMMC command. */
@@ -271,5 +273,8 @@ void sdmmc_end(sdmmc_t *sdmmc);
 void sdmmc_init_cmd(sdmmc_cmd_t *cmdbuf, u16 cmd, u32 arg, u32 rsp_type, u32 check_busy);
 int  sdmmc_execute_cmd(sdmmc_t *sdmmc, sdmmc_cmd_t *cmd, sdmmc_req_t *req, u32 *blkcnt_out);
 int  sdmmc_enable_low_voltage(sdmmc_t *sdmmc);
+#ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
+void sdmmc_ddr200_restore_host_cfg(sdmmc_t *sdmmc);
+#endif
 
 #endif

@@ -25,9 +25,10 @@
 #include "../utils/types.h"
 #include "../utils/util.h"
 #include "../utils/fatal.h"
+#include "../utils/log.h"
 #include "../emuMMC/emummc.h"
 
-#define DPRINTF(...) //fprintf(stdout, __VA_ARGS__)
+#define DPRINTF(fmt, ...) Log(fmt, ##__VA_ARGS__)
 
 sdmmc_accessor_t *_current_accessor = NULL;
 bool sdmmc_memcpy_buf = false;
@@ -381,7 +382,7 @@ int sdmmc_storage_read(sdmmc_storage_t *storage, u32 sector, u32 num_sectors, vo
 
 				// Next entry
 				int dma_idx = sdmmc_calculate_fitting_dma_index(accessor_sd, num_sectors) + 1;
-				
+
 				accessor_sd->parent->dmaBuffers[dma_idx].device_addr_buffer = original_dma_buffer->device_addr_buffer;
 				accessor_sd->parent->dmaBuffers[dma_idx].device_addr_buffer_masked = original_dma_buffer->device_addr_buffer_masked;
 				accessor_sd->parent->dmaBuffers[dma_idx].device_addr_buffer_size = original_dma_buffer->device_addr_buffer_size;
@@ -440,7 +441,7 @@ int sdmmc_storage_write(sdmmc_storage_t *storage, u32 sector, u32 num_sectors, v
 				accessor_sd->parent->dmaBuffers[dma_idx].device_addr_buffer_size = original_dma_buffer->device_addr_buffer_size;
 
 				u64 res = accessor_sd->vtab->read_write(accessor_sd, sector, num_sectors, buf, num_sectors * 512, 0);
-				
+
 				accessor_sd->parent->dmaBuffers[dma_idx].device_addr_buffer = 0;
 				accessor_sd->parent->dmaBuffers[dma_idx].device_addr_buffer_masked = 0;
 				accessor_sd->parent->dmaBuffers[dma_idx].device_addr_buffer_size = 0;

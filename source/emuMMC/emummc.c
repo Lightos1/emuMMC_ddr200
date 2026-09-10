@@ -59,6 +59,8 @@ static bool fat_mounted = false;
 
 #ifdef EMUMMC_SDMMC_UHS_DDR200_SUPPORT
 extern int _sd_storage_enable_DDR200(sdmmc_storage_t *storage, u8 *buf);
+extern int _sd_storage_switch_get(sdmmc_storage_t *storage, void *buf);
+extern void _sd_storage_set_current_limit(sdmmc_storage_t *storage, u16 current_limit, u8 *buf);
 
 static bool sdmmc_ddr200_reassert_enabled = true;
 
@@ -85,11 +87,20 @@ static void _ddr200_reassert(void)
     }
 
     sdmmc_card_clock_powersave(&sd_sdmmc, SDMMC_POWER_SAVE_DISABLE);
+    sdmmc_ddr200_restore_host_cfg(&sd_sdmmc);
     clock_sdmmc_invalidate_clock_source(SDMMC_1);
 
-    sd_storage.csd.busspeed = 200;
+    int ok = _sd_storage_switch_get(&sd_storage, ddr200_switch_buf);
 
-    int ok = _sd_storage_enable_DDR200(&sd_storage, ddr200_switch_buf);
+    if (ok)
+    {
+        u16 current_limit = ddr200_switch_buf[7] | (ddr200_switch_buf[6] << 8);
+        _sd_storage_set_current_limit(&sd_storage, current_limit, ddr200_switch_buf);
+
+        ok = _sd_storage_enable_DDR200(&sd_storage, ddr200_switch_buf);
+    }
+
+    sd_storage.csd.busspeed = ok ? 200 : 104;
 
     sdmmc_card_clock_powersave(&sd_sdmmc, SDMMC_POWER_SAVE_ENABLE);
 
@@ -101,6 +112,8 @@ static void _ddr200_reassert(void)
 
     if (!ok)
         sdmmc_ddr200_reassert_enabled = false;
+
+    Log("Reasserting\n");
 }
 #else
 #define _ddr200_reassert() ((void)0)
