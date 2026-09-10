@@ -1,3 +1,5 @@
+Do not use this unless you know what you are doing. This is wip and may do bad stuff to your sd card if misused.
+
 # emuMMC
 *A SDMMC driver replacement for Nintendo's Filesystem Services, by **m4xw***  
 
